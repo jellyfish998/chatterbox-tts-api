@@ -2,7 +2,7 @@
 Request models for API validation
 """
 
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel, Field, validator
 
 
@@ -55,3 +55,15 @@ class TTSRequest(BaseModel):
             if v not in allowed_qualities:
                 raise ValueError(f'streaming_quality must be one of: {", ".join(allowed_qualities)}')
         return v 
+class AudiobookScriptLine(BaseModel):
+    character: str = Field(default="Narrator", min_length=1, max_length=200)
+    spoken_text: str = Field(..., min_length=1)
+    cfg_weight: float = Field(default=0.4, ge=0.0, le=1.0)
+    exaggeration: float = Field(default=0.6, ge=0.25, le=2.0)
+
+class AudiobookPayload(BaseModel):
+    script_lines: List[AudiobookScriptLine] = Field(..., min_length=1)
+
+class AudiobookBatchRequest(BaseModel):
+    project_title: str = Field(..., min_length=1, max_length=200)
+    json_payload: AudiobookPayload

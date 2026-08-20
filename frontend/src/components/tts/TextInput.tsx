@@ -1,5 +1,5 @@
-import React from 'react';
-import { X, Zap, Volume2 } from 'lucide-react';
+import React, { useRef } from 'react';
+import { X, Zap, Volume2, BookOpen, FileText, UploadCloud } from 'lucide-react';
 import { Textarea } from '../ui/textarea';
 import { Card, CardContent } from '../ui/card';
 
@@ -12,6 +12,9 @@ interface TextInputProps {
   placeholder?: string;
   isStreamingEnabled?: boolean;
   onToggleStreaming?: () => void;
+  isAudiobookMode?: boolean;
+  onToggleAudiobookMode?: () => void;
+  onFilesSelected?: (files: FileList) => void; // <--- NEW PROP
 }
 
 export default function TextInput({
@@ -22,36 +25,96 @@ export default function TextInput({
   maxLength = 3000,
   placeholder = "Enter the text you want to convert to speech...",
   isStreamingEnabled = false,
-  onToggleStreaming
+  onToggleStreaming,
+  isAudiobookMode = false,
+  onToggleAudiobookMode,
+  onFilesSelected
 }: TextInputProps) {
+  
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    if (!isAudiobookMode) {
+      // Standard Mode: Just read the first file as plain text
+      const file = files[0];
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        if (event.target?.result) {
+          onChange(event.target.result as string);
+        }
+      };
+      reader.readAsText(file);
+    } else {
+      // Audiobook Mode: Pass the files up to TTSPage to handle the heavy lifting
+      if (onFilesSelected) {
+          onFilesSelected(files);
+      }
+    }
+    
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
   return (
     <Card className="">
       <CardContent>
         <div className="flex items-center justify-between mb-2">
           <label className="block text-sm font-medium text-foreground">
-            Text to Convert
+            {isAudiobookMode ? "Audiobook Batch Settings" : "Text to Convert"}
           </label>
           <div className="flex items-center gap-2">
-            {/* Streaming Toggle */}
-            {onToggleStreaming && (
+            
+            <input 
+              type="file" 
+              ref={fileInputRef} 
+              onChange={handleFileUpload} 
+              accept=".txt,.json" 
+              multiple 
+              className="hidden" 
+            />
+
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-muted text-muted-foreground hover:bg-muted/80 border border-border transition-colors duration-200"
+            >
+              <UploadCloud className="w-3 h-3" />
+              {isAudiobookMode ? "Upload Script Batch" : "Upload Script"}
+            </button>
+
+            {onToggleAudiobookMode && (
+              <button
+                onClick={onToggleAudiobookMode}
+                className={`flex items-center gap-1 text-xs px-2 py-1 rounded-md transition-colors duration-200 ${isAudiobookMode
+                  ? 'bg-blue-500/20 text-blue-600 border border-blue-500/30 dark:text-blue-400'
+                  : 'bg-muted text-muted-foreground hover:bg-muted/80 border border-border'
+                  }`}
+              >
+                {isAudiobookMode ? <BookOpen className="w-3 h-3" /> : <FileText className="w-3 h-3" />}
+                {isAudiobookMode ? 'Audiobook Mode' : 'Standard Mode'}
+              </button>
+            )}
+
+            {onToggleStreaming && !isAudiobookMode && (
               <button
                 onClick={onToggleStreaming}
                 className={`flex items-center gap-1 text-xs px-2 py-1 rounded-md transition-colors duration-200 ${isStreamingEnabled
                   ? 'bg-primary/20 text-primary border border-primary/30'
                   : 'bg-muted text-muted-foreground hover:bg-muted/80 border border-border'
                   }`}
-                title={isStreamingEnabled ? 'Streaming enabled - audio will play in real-time' : 'Enable streaming for real-time audio'}
               >
                 {isStreamingEnabled ? <Zap className="w-3 h-3" /> : <Volume2 className="w-3 h-3" />}
                 {isStreamingEnabled ? 'Streaming' : 'Standard'}
               </button>
             )}
-            {/* Clear Button */}
+            
             {hasText && (
               <button
                 onClick={onClear}
                 className="flex items-center gap-1 text-xs text-muted-foreground hover:text-destructive duration-300"
-                title="Clear text"
               >
                 <X className="w-3 h-3" />
                 Clear
@@ -60,32 +123,21 @@ export default function TextInput({
           </div>
         </div>
 
-        {/* Streaming Info */}
-        {isStreamingEnabled && onToggleStreaming && (
-          <div className="mb-2 p-2 bg-primary/5 border border-primary/20 rounded-md">
-            <div className="flex items-start gap-2">
-              <Zap className="w-4 h-4 text-primary mt-0.5 flex-shrink-0" />
-              <div className="text-xs text-primary">
-                <div className="font-medium">Streaming Mode Enabled</div>
-                <div className="text-primary/70 mt-1">
-                  Audio will play in real-time as it's generated. You'll also get a downloadable file when complete.
+        {/* The Textarea is completely hidden in Audiobook mode to prevent user meddling */}
+        {!isAudiobookMode && (
+            <>
+                <Textarea
+                value={value}
+                onChange={(e) => onChange(e.target.value)}
+                className="h-32 font-mono text-sm"
+                placeholder={placeholder}
+                />
+                <div className="text-right text-sm text-muted-foreground mt-1">
+                {value.length}/{maxLength} characters
                 </div>
-              </div>
-            </div>
-          </div>
+            </>
         )}
-
-        <Textarea
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          className="h-32"
-          placeholder={placeholder}
-        // maxLength={maxLength}
-        />
-        <div className="text-right text-sm text-muted-foreground mt-1">
-          {value.length}/{maxLength} characters
-        </div>
       </CardContent>
     </Card>
   );
-} 
+}

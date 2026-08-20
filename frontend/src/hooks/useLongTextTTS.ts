@@ -7,7 +7,8 @@ import type {
   LongTextJobListItem,
   LongTextProgress,
   LongTextSSEEvent,
-  LongTextJobStatus
+  LongTextJobStatus,
+  AudiobookBatchRequest
 } from '../types';
 
 interface UseLongTextTTSProps {
@@ -87,6 +88,17 @@ export function useLongTextTTS({ apiBaseUrl, sessionId }: UseLongTextTTSProps) {
       return updated;
     });
   }, []);
+
+  const submitAudiobookJob = useCallback(
+    (request: AudiobookBatchRequest) => service.submitAudiobookJob(request),
+    [service]
+  );
+  
+  const extractYoutubeVoice = useCallback(
+    (url: string, startTime: number, duration: number, voiceName: string) =>
+      service.extractYoutubeVoice(url, startTime, duration, voiceName),
+    [service]
+  );
 
   // Submit new job mutation
   const submitJobMutation = useMutation({
@@ -378,6 +390,8 @@ export function useLongTextTTS({ apiBaseUrl, sessionId }: UseLongTextTTSProps) {
     // Job ID management
     trackedJobIds,
     addJobId,
-    removeJobId
+    removeJobId,
+    submitAudiobookJob,
+    extractYoutubeVoice
   };
 }

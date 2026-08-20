@@ -12,7 +12,8 @@ import type {
   LongTextJobRetryRequest,
   BulkJobActionRequest,
   BulkJobActionResponse,
-  LongTextHistoryItem
+  LongTextHistoryItem,
+  AudiobookBatchRequest
 } from '../types';
 import { removeV1Suffix } from '../lib/utils';
 
@@ -78,7 +79,33 @@ export const createLongTextTTSService = (baseUrl: string, sessionId?: string) =>
 
       return response.json();
     },
+    submitAudiobookJob: async (request: AudiobookBatchRequest) => {
+      const response = await fetch(`${removeV1Suffix(baseUrl)}/v1/audiobook/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      });
 
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Audiobook batch submission failed: ${response.status} ${errorText}`);
+      }
+      return response.json();
+    },
+
+    extractYoutubeVoice: async (url: string, startTime: number, duration: number, voiceName: string): Promise<{ status: string; voice: string }> => {
+      const response = await fetch(`${removeV1Suffix(baseUrl)}/v1/audiobook/youtube`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, start_time: startTime, duration, voice_name: voiceName }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Voice extraction failed: ${response.status} ${errorText}`);
+      }
+      return response.json();
+    },
     /**
      * Get job status and progress
      */

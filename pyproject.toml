@@ -7,8 +7,10 @@ readme = "README.md"
 license = { text = "AGPLv3" }
 requires-python = ">=3.11, <3.12"
 dependencies = [
-  # "chatterbox-tts @ git+https://github.com/resemble-ai/chatterbox.git",
-  "chatterbox-tts @ git+https://github.com/travisvn/chatterbox-multilingual.git@exp",
+"chatterbox-tts>=0.4.0",
+    "yt-dlp",
+    "demucs",
+    "soundfile",
   "resemble-perth",
   "torch>=2.0.0,<2.7.0",
   "torchaudio>=2.0.0,<2.7.0",

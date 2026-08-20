@@ -4,6 +4,7 @@ import { Input } from './ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import VoiceUploadModal from './VoiceUploadModal';
+import VoiceHunterModal from './VoiceHunterModal';
 import type { VoiceSample } from '../types';
 import { getLanguageByCode, getLanguageName, DEFAULT_LANGUAGE, getLanguageFlag } from '../constants/languages';
 
@@ -43,11 +44,11 @@ export default function VoiceLibrary({
   const [editingVoice, setEditingVoice] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [showUploadModal, setShowUploadModal] = useState(false);
+  const [showHunterModal, setShowHunterModal] = useState(false);
   const [addingAliasFor, setAddingAliasFor] = useState<string | null>(null);
   const [newAlias, setNewAlias] = useState('');
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  // Cleanup audio when component unmounts
   useEffect(() => {
     return () => {
       if (currentAudioRef.current) {
@@ -61,7 +62,7 @@ export default function VoiceLibrary({
     try {
       await onAddVoice(file, customName, language);
     } catch (error) {
-      throw error; // Re-throw to let the modal handle the error display
+      throw error;
     }
   };
 
@@ -101,9 +102,7 @@ export default function VoiceLibrary({
     if (onSetDefaultVoice) {
       try {
         const success = await onSetDefaultVoice(voiceName);
-        if (!success) {
-          alert('Failed to set default voice. Please try again.');
-        }
+        if (!success) alert('Failed to set default voice. Please try again.');
       } catch (error) {
         alert('Failed to set default voice. Please try again.');
       }
@@ -114,9 +113,7 @@ export default function VoiceLibrary({
     if (onClearDefaultVoice) {
       try {
         const success = await onClearDefaultVoice();
-        if (!success) {
-          alert('Failed to clear default voice. Please try again.');
-        }
+        if (!success) alert('Failed to clear default voice. Please try again.');
       } catch (error) {
         alert('Failed to clear default voice. Please try again.');
       }
@@ -153,9 +150,7 @@ export default function VoiceLibrary({
     if (onRemoveAlias) {
       try {
         const success = await onRemoveAlias(voiceId, alias);
-        if (!success) {
-          alert('Failed to remove alias. Please try again.');
-        }
+        if (!success) alert('Failed to remove alias. Please try again.');
       } catch (error: any) {
         alert(error.message || 'Failed to remove alias. Please try again.');
       }
@@ -163,28 +158,23 @@ export default function VoiceLibrary({
   };
 
   const playPreview = (voice: VoiceSample) => {
-    // If clicking the same voice that's currently playing/paused
     if (playingVoice === voice.id && currentAudioRef.current) {
       if (currentAudioRef.current.paused) {
-        // Resume playback
         currentAudioRef.current.play().catch(error => {
           console.error('Error resuming voice:', error);
           alert('Failed to resume voice sample');
         });
       } else {
-        // Pause playback (keep position)
         currentAudioRef.current.pause();
       }
       return;
     }
 
-    // Stop any currently playing audio from a different voice
     if (currentAudioRef.current) {
       currentAudioRef.current.pause();
       currentAudioRef.current = null;
     }
 
-    // Start playing the new audio
     const audio = new Audio(voice.audioUrl);
     currentAudioRef.current = audio;
 
@@ -239,6 +229,18 @@ export default function VoiceLibrary({
                   <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
                 </Button>
               )}
+              
+              {/* Clean Voice Hunter Button */}
+              <Button
+                variant="secondary"
+                onClick={() => setShowHunterModal(true)}
+                className="px-4 py-2 rounded-lg text-sm flex items-center gap-2 duration-300 mr-2 bg-red-500/10 text-red-500 hover:bg-red-500/20 border border-red-500/20"
+                title="Extract voice from YouTube"
+              >
+                <Globe className="w-4 h-4" />
+                Hunter
+              </Button>
+
               <Button
                 onClick={() => setShowUploadModal(true)}
                 className="bg-primary hover:bg-primary/90 text-primary-foreground px-4 py-2 rounded-lg text-sm flex items-center gap-2 font-semibold duration-300"
@@ -335,7 +337,6 @@ export default function VoiceLibrary({
                             )}
                           </div>
 
-                          {/* Aliases display */}
                           {voice.aliases && voice.aliases.length > 0 && (
                             <div className="flex flex-wrap gap-1 mt-1">
                               {voice.aliases.map((alias, index) => (
@@ -363,7 +364,6 @@ export default function VoiceLibrary({
                             </div>
                           )}
 
-                          {/* Add alias input */}
                           {addingAliasFor === voice.id && (
                             <div className="flex items-center gap-2 mt-2">
                               <Input
@@ -404,7 +404,6 @@ export default function VoiceLibrary({
                       )}
                     </div>
                     <div className="flex items-center gap-2">
-                      {/* Default Voice Button - only show if we have the handler */}
                       {onSetDefaultVoice && defaultVoice !== voice.name && (
                         <button
                           onClick={(e) => {
@@ -417,7 +416,6 @@ export default function VoiceLibrary({
                           <Star className="w-4 h-4" />
                         </button>
                       )}
-                      {/* Add Alias Button - only show if we have the handler */}
                       {onAddAlias && addingAliasFor !== voice.id && (
                         <button
                           onClick={(e) => {
@@ -470,12 +468,26 @@ export default function VoiceLibrary({
         </CardContent>
       </Card>
 
-      {/* Voice Upload Modal */}
       <VoiceUploadModal
         open={showUploadModal}
         onOpenChange={setShowUploadModal}
         onUpload={handleUploadVoice}
       />
+
+      {/* Voice Hunter Modal */}
+      <VoiceHunterModal
+        open={showHunterModal}
+        onOpenChange={setShowHunterModal}
+        onExtract={async (url, startTime, duration, voiceName) => {
+          const res = await fetch('/v1/audiobook/youtube', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ url, start_time: startTime, duration, voice_name: voiceName })
+          });
+          if (!res.ok) throw new Error(await res.text());
+          if (onRefresh) await onRefresh();
+        }}
+      />
     </>
   );
-} 
+}

@@ -1,7 +1,8 @@
 import React, { useState, useMemo } from 'react';
-import { Volume2 } from 'lucide-react';
+import { Volume2, User, Loader2 } from 'lucide-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Button } from '../components/ui/button';
+import { Input } from '../components/ui/input';
 import {
   ApiEndpointSelector,
   TextInput,
@@ -9,6 +10,7 @@ import {
   AudioPlayer,
   LongTextHistory
 } from '../components/tts';
+
 import VoiceLibrary from '../components/VoiceLibrary';
 import AudioHistory from '../components/AudioHistory';
 import StatusHeader from '../components/StatusHeader';
@@ -33,6 +35,12 @@ import { useLongTextHistory } from '../hooks/useLongTextHistory';
 import { useHistoryTab } from '../hooks/useHistoryTab';
 import type { TTSRequest, LongTextRequest } from '../types';
 
+interface CastMember {
+  character: string;
+  voice_comment?: string;
+  celebrity?: string;
+}
+
 export default function TTSPage() {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [isClickedGenerating, setIsClickedGenerating] = useState(false);
@@ -44,7 +52,15 @@ export default function TTSPage() {
 
   // Text input management with persistence
   const { text, updateText, clearText, hasText } = useTextInput();
-
+  
+  // Audiobook State Management (Hoisted up from TextInput)
+  const [isAudiobookMode, setIsAudiobookMode] = useState(false);
+  const [projectTitle, setProjectTitle] = useState('');
+  const [castList, setCastList] = useState<CastMember[]>([]);
+  const [chaptersData, setChaptersData] = useState<any[]>([]);
+  const [voiceMapping, setVoiceMapping] = useState<Record<string, string>>({});
+  const [isProcessingFiles, setIsProcessingFiles] = useState(false);
+  
   // Advanced settings management with persistence
   const {
     exaggeration,
@@ -203,7 +219,7 @@ export default function TTSPage() {
   const { data: health, isLoading: isLoadingHealth } = useQuery({
     queryKey: ['health', apiBaseUrl],
     queryFn: ttsService.getHealth,
-    refetchInterval: 3000, // More frequent during startup
+    refetchInterval: 3000, 
     retry: true,
     retryDelay: 1000
   });
@@ -216,7 +232,7 @@ export default function TTSPage() {
       if (!response.ok) throw new Error('Failed to fetch API info');
       return response.json();
     },
-    refetchInterval: 60000, // Refresh every minute
+    refetchInterval: 60000, 
     retry: false
   });
 
@@ -224,22 +240,18 @@ export default function TTSPage() {
   const generateMutation = useMutation({
     mutationFn: ttsService.generateSpeech,
     onMutate: (variables) => {
-      // Track this request as originating from this frontend
       if (variables.session_id) {
         trackRequest(variables.session_id);
       }
     },
     onSuccess: async (audioBlob) => {
-      // Clean up previous audio URL
       if (audioUrl) {
         URL.revokeObjectURL(audioUrl);
       }
 
-      // Create new audio URL
       const url = URL.createObjectURL(audioBlob);
       setAudioUrl(url);
 
-      // Save to audio history
       try {
         await addAudioRecord(
           audioBlob,
@@ -262,7 +274,108 @@ export default function TTSPage() {
     }
   });
 
+
+  // --- AUDIOBOOK FILE PROCESSING ---
+  const handleAudiobookFilesSelected = async (files: FileList) => {
+    setIsProcessingFiles(true);
+    try {
+      const fileData: Record<string, any> = {};
+      
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        if (!file.name.endsWith('.json')) continue; 
+        
+        const content = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = (e) => resolve(e.target?.result as string);
+          reader.onerror = (e) => reject(e);
+          reader.readAsText(file);
+        });
+        
+        try {
+          fileData[file.name] = JSON.parse(content);
+        } catch (err) {
+          console.error(`Failed to parse ${file.name}:`, err);
+        }
+      }
+
+      if (!fileData['index.json']) {
+        throw new Error("Missing 'index.json'. Please select the entire script folder including index.json and all chapter files.");
+      }
+
+      const index = fileData['index.json'];
+      if (index.title) {
+        setProjectTitle(index.title);
+      }
+
+      const chapters = [];
+      if (index.chapters && Array.isArray(index.chapters)) {
+        for (const chapMeta of index.chapters) {
+          const chapData = fileData[chapMeta.file];
+          if (chapData) {
+            chapters.push({
+              title: chapData.scene_title || chapMeta.scene_title || chapMeta.file,
+              script_lines: chapData.script_lines || []
+            });
+          }
+        }
+      }
+
+      const newCastList = index.cast || [];
+      const newMapping: Record<string, string> = {};
+
+      newCastList.forEach((member: CastMember) => {
+        const match = voices.find(v => v.name.toLowerCase() === member.character.toLowerCase());
+        newMapping[member.character] = match ? match.name : "";
+      });
+
+      setCastList(newCastList);
+      setChaptersData(chapters);
+      setVoiceMapping(newMapping);
+
+    } catch (err: any) {
+      alert(err.message || "Failed to process audiobook batch.");
+    } finally {
+      setIsProcessingFiles(false);
+    }
+  };
+
   const handleGenerate = async () => {
+    
+    // --- AUDIOBOOK GENERATION ROUTE ---
+    if (isAudiobookMode) {
+        if (chaptersData.length === 0) {
+            alert("No chapters loaded. Please upload a valid script batch first.");
+            return;
+        }
+
+        setIsClickedGenerating(true);
+        try {
+          const batchPayload = {
+            chapters: chaptersData,
+            mapping_dict: voiceMapping
+          };
+
+          const res = await fetch('/v1/audiobook/generate', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(batchPayload)
+          });
+          
+          if (!res.ok) {
+            throw new Error(`Server returned ${res.status}: ${await res.text()}`);
+          }
+          
+          alert("Audiobook batch submitted! Check your Docker terminal to watch the engine process the chapters.");
+        } catch (e: any) {
+          alert("Submission failed: " + (e.message || e));
+        } finally {
+          setIsClickedGenerating(false);
+        }
+        return;
+    }
+
+    // --- STANDARD TTS GENERATION ROUTE ---
     if (!text.trim()) {
       alert('Please enter some text to convert to speech.');
       return;
@@ -270,14 +383,11 @@ export default function TTSPage() {
 
     setIsClickedGenerating(true);
 
-    // Check if we should use long text processing
     if (shouldUseLongText(text)) {
-
       setTimeout(() => {
         setIsClickedGenerating(false);
       }, 8000);
 
-      // Use long text TTS
       const longTextRequest: LongTextRequest = {
         text,
         voice: selectedVoice?.name,
@@ -294,7 +404,6 @@ export default function TTSPage() {
       }
 
       try {
-        // Track this request as long-text type
         trackRequest(sessionId, 'long-text');
         submitJob(longTextRequest);
       } catch (error) {
@@ -308,7 +417,6 @@ export default function TTSPage() {
       }, 4000);
     }
 
-    // Prepare request data for standard/streaming TTS
     const requestData: TTSRequest = {
       input: text,
       exaggeration,
@@ -318,24 +426,18 @@ export default function TTSPage() {
     };
 
     if (selectedVoice) {
-      // Use voice name for backend voice library
       requestData.voice = selectedVoice.name;
-
-      // Also include voice file if it's a client-side voice (for backward compatibility)
       if (selectedVoice.file) {
         requestData.voice_file = selectedVoice.file;
       }
     }
 
-    // Track this request
     trackRequest(sessionId);
 
     if (isStreamingEnabled) {
-      // Use streaming
       try {
         await startStreaming(requestData);
 
-        // If streaming completes successfully and we have a final audio URL, save to history
         if (streamingAudioUrl) {
           try {
             const response = await fetch(streamingAudioUrl);
@@ -361,22 +463,15 @@ export default function TTSPage() {
         alert('Failed to stream speech. Please try again.');
       }
     } else {
-      // Use standard generation
       generateMutation.mutate(requestData);
     }
   };
 
-  // Determine if backend is ready for voice operations
+
   const isBackendReady = voicesBackendReady && defaultVoiceBackendReady;
   const isInitializing = healthStatus === 'initializing' || health?.status === 'initializing';
-
-  // Determine if generation is in progress (streaming, standard, or long text)
   const isGenerating = isClickedGenerating || generateMutation.isPending || isStreaming || isSubmitting || isJobActive;
-
-  // Use long text audio URL if available, then streaming, then standard
   const currentAudioUrl = longTextAudioUrl || streamingAudioUrl || audioUrl;
-
-  // Check if current text requires long text processing
   const isLongText = shouldUseLongText(text);
   const estimatedTime = isLongText ? estimateProcessingTime(text.length) : null;
 
@@ -409,7 +504,7 @@ export default function TTSPage() {
             />
           </div>
         </div>
-
+     
         {/* Backend Loading State */}
         {(isInitializing || !isBackendReady) && (
           <div className="w-full max-w-2xl mx-auto">
@@ -439,7 +534,7 @@ export default function TTSPage() {
             >
               {showStatistics ? 'Hide Stats' : 'Show Stats'}
             </button>
-            {/* Statistics Panel (collapsible) */}
+            {/* Statistics Panel */}
             {showStatistics && (
               <StatusStatisticsPanel
                 statistics={statistics}
@@ -461,15 +556,93 @@ export default function TTSPage() {
             {/* Text Input */}
             <TextInput
               value={text}
-              onChange={updateText}
-              onClear={clearText}
-              hasText={hasText}
-              isStreamingEnabled={isStreamingEnabled}
-              onToggleStreaming={toggleStreaming}
+              onChange={updateText} 
+              onClear={() => {
+                  clearText();
+                  setCastList([]);
+                  setChaptersData([]);
+              }}
+              hasText={hasText || chaptersData.length > 0}             
+              isStreamingEnabled={isStreamingEnabled}  
+              onToggleStreaming={toggleStreaming}      
+              isAudiobookMode={isAudiobookMode}
+              onToggleAudiobookMode={() => {
+                setIsAudiobookMode(!isAudiobookMode);
+                if (!isAudiobookMode && isStreamingEnabled) {
+                  toggleStreaming(); 
+                }
+              }}
+              onFilesSelected={handleAudiobookFilesSelected}
             />
 
+            {/* --- AUDIOBOOK CHARACTER MAPPING UI --- */}
+            {isAudiobookMode && (
+                <div className="flex flex-col gap-4 w-full">
+                    
+                    {/* Project Title Input */}
+                    <div className="bg-card p-4 rounded-lg border border-border">
+                        <label className="block text-sm font-medium text-foreground mb-2">Project Title</label>
+                        <Input 
+                        placeholder="Auto-filled from index.json" 
+                        value={projectTitle} 
+                        onChange={(e) => setProjectTitle(e.target.value)} 
+                        className="text-sm h-10 w-full"
+                        />
+                    </div>
+
+                    {/* Character Voice Mapping */}
+                    {castList.length > 0 ? (
+                    <div className="p-4 rounded-lg border border-border bg-card">
+                        <h3 className="text-sm font-semibold mb-3 flex items-center gap-2 text-foreground">
+                        <User className="w-4 h-4 text-primary" />
+                        Character Voice Mapping
+                        </h3>
+                        <div className="space-y-3 max-h-80 overflow-y-auto pr-2">
+                        {castList.map((cast) => (
+                            <div key={cast.character} className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-3 bg-muted/30 rounded-md border border-border/50">
+                            <div className="flex-1 min-w-0">
+                                <div className="font-semibold text-sm text-foreground">{cast.character}</div>
+                                {cast.celebrity && (
+                                <div className="text-xs text-muted-foreground mt-1 truncate">
+                                    <span className="font-medium">Sounds like:</span> {cast.celebrity}
+                                </div>
+                                )}
+                                {cast.voice_comment && (
+                                <div className="text-xs text-muted-foreground mt-1 italic line-clamp-2">
+                                    {cast.voice_comment}
+                                </div>
+                                )}
+                            </div>
+                            
+                            <div className="w-full md:w-56 shrink-0">
+                                <select
+                                value={voiceMapping[cast.character] || ""}
+                                onChange={(e) => setVoiceMapping({ ...voiceMapping, [cast.character]: e.target.value })}
+                                className="w-full h-9 px-3 text-sm rounded-md border border-input bg-background text-foreground hover:border-primary focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-colors"
+                                >
+                                <option value="" disabled>Select a voice...</option>
+                                {voices.map(v => (
+                                    <option key={v.id} value={v.name}>{v.name}</option>
+                                ))}
+                                </select>
+                            </div>
+                            </div>
+                        ))}
+                        </div>
+                    </div>
+                    ) : (
+                        isProcessingFiles ? (
+                            <div className="flex items-center justify-center p-8 bg-card rounded-lg border border-border">
+                                <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+                            </div>
+                        ) : null
+                    )}
+                </div>
+            )}
+
+
             {/* Long Text Detection */}
-            {isLongText && (
+            {isLongText && !isAudiobookMode && (
               <div className="bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
                 <div className="flex items-start gap-3">
                   <div className="flex-shrink-0 w-5 h-5 rounded-full bg-blue-500 flex items-center justify-center mt-0.5">
@@ -493,7 +666,7 @@ export default function TTSPage() {
             )}
 
             {/* Streaming Progress */}
-            {(isStreaming || streamingProgress || streamingAudioUrl || streamingError) && (
+            {(isStreaming || streamingProgress || streamingAudioUrl || streamingError) && !isAudiobookMode && (
               <StreamingProgressComponent
                 isStreaming={isStreaming}
                 progress={streamingProgress}
@@ -563,21 +736,23 @@ export default function TTSPage() {
             )}
 
             {/* Advanced Settings */}
-            <AdvancedSettings
-              showAdvanced={showAdvanced}
-              onToggle={() => setShowAdvanced(!showAdvanced)}
-              exaggeration={exaggeration}
-              onExaggerationChange={updateExaggeration}
-              cfgWeight={cfgWeight}
-              onCfgWeightChange={updateCfgWeight}
-              temperature={temperature}
-              onTemperatureChange={updateTemperature}
-              onResetToDefaults={resetToDefaults}
-              isDefault={isDefault}
-            />
+            {!isAudiobookMode && (
+                <AdvancedSettings
+                showAdvanced={showAdvanced}
+                onToggle={() => setShowAdvanced(!showAdvanced)}
+                exaggeration={exaggeration}
+                onExaggerationChange={updateExaggeration}
+                cfgWeight={cfgWeight}
+                onCfgWeightChange={updateCfgWeight}
+                temperature={temperature}
+                onTemperatureChange={updateTemperature}
+                onResetToDefaults={resetToDefaults}
+                isDefault={isDefault}
+                />
+            )}
 
             {/* Current Voice Indicator */}
-            {selectedVoice && (
+            {selectedVoice && !isAudiobookMode && (
               <div className="text-center text-sm text-muted-foreground">
                 Using voice: <span className="font-medium text-foreground">{selectedVoice.name}</span>
                 {defaultVoice === selectedVoice.name && (
@@ -591,23 +766,23 @@ export default function TTSPage() {
             {/* Generate Button */}
             <Button
               onClick={handleGenerate}
-              disabled={isGenerating || !hasText}
-              className="w-full py-6 px-6 text-xl [&_svg]:size-6 [&_svg:not([class*='size-'])]:size-6 flex gap-4"
+              disabled={isGenerating || (isAudiobookMode ? chaptersData.length === 0 : !hasText)}
+              className="w-full py-6 px-6 text-xl [&_svg]:size-6 [&_svg:not([class*='size-'])]:size-6 flex gap-4 mt-4"
             >
               <Volume2 className="w-5 h-5 mr-2" />
-              {isGenerating ? (isStreaming ? 'Streaming...' : 'Generating...') : 'Generate Speech'}
+              {isGenerating ? (isStreaming ? 'Streaming...' : 'Generating...') : (isAudiobookMode ? 'Generate Audiobook Batch' : 'Generate Speech')}
             </Button>
 
             {/* Audio Player - Only show for non-streaming audio or completed streaming */}
-            {currentAudioUrl && !isStreaming && (
+            {currentAudioUrl && !isStreaming && !isAudiobookMode && (
               <AudioPlayer audioUrl={currentAudioUrl} />
             )}
           </div>
         </div>
 
-        {/* Active Jobs Monitor - Only show when there are jobs currently processing */}
+        {/* Active Jobs Monitor */}
         {jobList.length > 0 && (
-          <div className="w-full max-w-3xl mx-auto">
+          <div className="w-full max-w-3xl mx-auto mt-8">
             <LongTextJobs
               jobs={jobList}
               totalCount={totalJobCount}
@@ -640,88 +815,90 @@ export default function TTSPage() {
         )}
 
         {/* History Section with Tabs */}
-        <div className="w-full max-w-3xl mx-auto">
-          {/* History Tabs */}
-          <div className="flex border-b border-border mb-4">
-            <button
-              onClick={() => updateHistoryTab('regular')}
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${historyTab === 'regular'
-                ? 'border-primary text-primary'
-                : 'border-transparent text-muted-foreground hover:text-foreground'
-                }`}
-            >
-              Regular TTS ({audioHistory.length})
-            </button>
-            <button
-              onClick={() => updateHistoryTab('longtext')}
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${historyTab === 'longtext'
-                ? 'border-primary text-primary'
-                : 'border-transparent text-muted-foreground hover:text-foreground'
-                }`}
-            >
-              Long Text ({longTextTotalCount})
-            </button>
-          </div>
+        {!isAudiobookMode && (
+            <div className="w-full max-w-3xl mx-auto mt-8">
+            {/* History Tabs */}
+            <div className="flex border-b border-border mb-4">
+                <button
+                onClick={() => updateHistoryTab('regular')}
+                className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${historyTab === 'regular'
+                    ? 'border-primary text-primary'
+                    : 'border-transparent text-muted-foreground hover:text-foreground'
+                    }`}
+                >
+                Regular TTS ({audioHistory.length})
+                </button>
+                <button
+                onClick={() => updateHistoryTab('longtext')}
+                className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${historyTab === 'longtext'
+                    ? 'border-primary text-primary'
+                    : 'border-transparent text-muted-foreground hover:text-foreground'
+                    }`}
+                >
+                Long Text ({longTextTotalCount})
+                </button>
+            </div>
 
-          {/* History Content */}
-          {historyTab === 'regular' ? (
-            <AudioHistory
-              audioHistory={audioHistory}
-              onDeleteAudioRecord={deleteAudioRecord}
-              onRenameAudioRecord={renameAudioRecord}
-              onClearHistory={clearHistory}
-              onRestoreSettings={(settings) => {
-                updateExaggeration(settings.exaggeration);
-                updateCfgWeight(settings.cfgWeight);
-                updateTemperature(settings.temperature);
-              }}
-              onRestoreText={updateText}
-              isLoading={historyLoading}
-            />
-          ) : (
-            <LongTextHistory
-              jobs={longTextJobs}
-              totalCount={longTextTotalCount}
-              currentPage={longTextCurrentPage}
-              totalPages={longTextTotalPages}
-              selectedJobs={longTextSelectedJobs}
-              isLoading={isLoadingLongTextHistory}
-              isLoadingStats={isLoadingLongTextStats}
-              stats={longTextStats}
-              onUpdateJob={updateLongTextJob}
-              onRetryJob={retryLongTextJob}
-              onDeleteJob={deleteLongTextJob}
-              onArchiveJob={archiveLongTextJob}
-              onUnarchiveJob={unarchiveLongTextJob}
-              onDownloadAudio={downloadLongTextAudio}
-              onGetAudioUrl={getLongTextAudioUrl}
-              onBulkDelete={bulkDeleteLongTextJobs}
-              onBulkArchive={bulkArchiveLongTextJobs}
-              onBulkUnarchive={bulkUnarchiveLongTextJobs}
-              onBulkRetry={bulkRetryLongTextJobs}
-              onToggleJobSelection={toggleLongTextJobSelection}
-              onSelectAllJobs={selectAllLongTextJobs}
-              onClearSelection={clearLongTextSelection}
-              onGoToPage={goToLongTextPage}
-              onNextPage={nextLongTextPage}
-              onPrevPage={prevLongTextPage}
-              onSearch={searchLongTextJobs}
-              onUpdateSort={updateLongTextSort}
-              onClearHistory={clearLongTextHistory}
-              showArchived={longTextHistorySettings.showArchived}
-              onToggleArchived={() => {
-                updateLongTextHistorySettings({ showArchived: !longTextHistorySettings.showArchived });
-              }}
-              currentSort={longTextHistorySettings.sort}
-              onRestoreSettings={(settings) => {
-                updateExaggeration(settings.exaggeration);
-                updateCfgWeight(settings.cfgWeight);
-                updateTemperature(settings.temperature);
-              }}
-              onRestoreText={updateText}
-            />
-          )}
-        </div>
+            {/* History Content */}
+            {historyTab === 'regular' ? (
+                <AudioHistory
+                audioHistory={audioHistory}
+                onDeleteAudioRecord={deleteAudioRecord}
+                onRenameAudioRecord={renameAudioRecord}
+                onClearHistory={clearHistory}
+                onRestoreSettings={(settings) => {
+                    updateExaggeration(settings.exaggeration);
+                    updateCfgWeight(settings.cfgWeight);
+                    updateTemperature(settings.temperature);
+                }}
+                onRestoreText={updateText}
+                isLoading={historyLoading}
+                />
+            ) : (
+                <LongTextHistory
+                jobs={longTextJobs}
+                totalCount={longTextTotalCount}
+                currentPage={longTextCurrentPage}
+                totalPages={longTextTotalPages}
+                selectedJobs={longTextSelectedJobs}
+                isLoading={isLoadingLongTextHistory}
+                isLoadingStats={isLoadingLongTextStats}
+                stats={longTextStats}
+                onUpdateJob={updateLongTextJob}
+                onRetryJob={retryLongTextJob}
+                onDeleteJob={deleteLongTextJob}
+                onArchiveJob={archiveLongTextJob}
+                onUnarchiveJob={unarchiveLongTextJob}
+                onDownloadAudio={downloadLongTextAudio}
+                onGetAudioUrl={getLongTextAudioUrl}
+                onBulkDelete={bulkDeleteLongTextJobs}
+                onBulkArchive={bulkArchiveLongTextJobs}
+                onBulkUnarchive={bulkUnarchiveLongTextJobs}
+                onBulkRetry={bulkRetryLongTextJobs}
+                onToggleJobSelection={toggleLongTextJobSelection}
+                onSelectAllJobs={selectAllLongTextJobs}
+                onClearSelection={clearLongTextSelection}
+                onGoToPage={goToLongTextPage}
+                onNextPage={nextLongTextPage}
+                onPrevPage={prevLongTextPage}
+                onSearch={searchLongTextJobs}
+                onUpdateSort={updateLongTextSort}
+                onClearHistory={clearLongTextHistory}
+                showArchived={longTextHistorySettings.showArchived}
+                onToggleArchived={() => {
+                    updateLongTextHistorySettings({ showArchived: !longTextHistorySettings.showArchived });
+                }}
+                currentSort={longTextHistorySettings.sort}
+                onRestoreSettings={(settings) => {
+                    updateExaggeration(settings.exaggeration);
+                    updateCfgWeight(settings.cfgWeight);
+                    updateTemperature(settings.temperature);
+                }}
+                onRestoreText={updateText}
+                />
+            )}
+            </div>
+        )}
       </div>
 
       {/* Progress Overlay */}

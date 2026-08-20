@@ -465,3 +465,17 @@ export interface LongTextHistoryItem extends LongTextJobListItem {
 export interface MessageResponse {
   message: string;
 }
+
+export interface AudiobookScriptLine {
+  character: string;
+  spoken_text: string;
+  cfg_weight?: number;
+  exaggeration?: number;
+}
+
+export interface AudiobookBatchRequest {
+  project_title: string;
+  json_payload: {
+    script_lines: AudiobookScriptLine[];
+  };
+}
