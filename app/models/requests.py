@@ -2,8 +2,8 @@
 Request models for API validation
 """
 
-from typing import Optional, List
-from pydantic import BaseModel, Field, validator
+from typing import Optional, List, Dict
+from pydantic import BaseModel, Field, field_validator
 
 
 class TTSRequest(BaseModel):
@@ -26,13 +26,15 @@ class TTSRequest(BaseModel):
     streaming_buffer_size: Optional[int] = Field(None, description="Number of chunks to buffer", ge=1, le=10)
     streaming_quality: Optional[str] = Field(None, description="Speed vs quality trade-off")
     
-    @validator('input')
+    @field_validator('input')
+    @classmethod
     def validate_input(cls, v):
         if not v or not v.strip():
             raise ValueError('Input text cannot be empty')
         return v.strip()
     
-    @validator('stream_format')
+    @field_validator('stream_format')
+    @classmethod
     def validate_stream_format(cls, v):
         if v is not None:
             allowed_formats = ['audio', 'sse']
@@ -40,7 +42,8 @@ class TTSRequest(BaseModel):
                 raise ValueError(f'stream_format must be one of: {", ".join(allowed_formats)}')
         return v
     
-    @validator('streaming_strategy')
+    @field_validator('streaming_strategy')
+    @classmethod
     def validate_streaming_strategy(cls, v):
         if v is not None:
             allowed_strategies = ['sentence', 'paragraph', 'fixed', 'word']
@@ -48,22 +51,29 @@ class TTSRequest(BaseModel):
                 raise ValueError(f'streaming_strategy must be one of: {", ".join(allowed_strategies)}')
         return v
     
-    @validator('streaming_quality')
+    @field_validator('streaming_quality')
+    @classmethod
     def validate_streaming_quality(cls, v):
         if v is not None:
             allowed_qualities = ['fast', 'balanced', 'high']
             if v not in allowed_qualities:
                 raise ValueError(f'streaming_quality must be one of: {", ".join(allowed_qualities)}')
         return v 
+
+# --- AUDIOBOOK BATCH MODELS ---
+
 class AudiobookScriptLine(BaseModel):
-    character: str = Field(default="Narrator", min_length=1, max_length=200)
+    character: str = Field(..., min_length=1, max_length=200)
     spoken_text: str = Field(..., min_length=1)
     cfg_weight: float = Field(default=0.4, ge=0.0, le=1.0)
     exaggeration: float = Field(default=0.6, ge=0.25, le=2.0)
+    temperature: float = Field(default=0.8, ge=0.05, le=5.0)
 
-class AudiobookPayload(BaseModel):
+class AudiobookChapter(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
     script_lines: List[AudiobookScriptLine] = Field(..., min_length=1)
 
 class AudiobookBatchRequest(BaseModel):
-    project_title: str = Field(..., min_length=1, max_length=200)
-    json_payload: AudiobookPayload
+    project_title: str = Field(default="Audiobook Batch", max_length=200)
+    chapters: List[AudiobookChapter] = Field(..., min_length=1)
+    mapping_dict: Dict[str, str] = Field(..., min_length=1)

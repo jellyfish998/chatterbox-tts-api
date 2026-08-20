@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import { Volume2, User, Loader2 } from 'lucide-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Button } from '../components/ui/button';
@@ -53,9 +53,10 @@ export default function TTSPage() {
   // Text input management with persistence
   const { text, updateText, clearText, hasText } = useTextInput();
   
-  // Audiobook State Management (Hoisted up from TextInput)
+  // Audiobook State Management
   const [isAudiobookMode, setIsAudiobookMode] = useState(false);
   const [projectTitle, setProjectTitle] = useState('');
+  const [indexData, setIndexData] = useState<any>(null);
   const [castList, setCastList] = useState<CastMember[]>([]);
   const [chaptersData, setChaptersData] = useState<any[]>([]);
   const [voiceMapping, setVoiceMapping] = useState<Record<string, string>>({});
@@ -93,8 +94,6 @@ export default function TTSPage() {
     audioInfo,
     isStreamingEnabled,
     toggleStreaming,
-    streamingFormat,
-    setStreamingFormat,
     startStreaming,
     stopStreaming,
     clearAudio: clearStreamingAudio
@@ -115,13 +114,13 @@ export default function TTSPage() {
     isLoadingJobs,
     isSubmitting,
     submitJob,
+    submitAudiobookJob, // <-- Extracted for UI tracking
     pauseJob,
     resumeJob,
     cancelJob,
     refetchJobs,
     estimateProcessingTime,
-    shouldUseLongText,
-    getStatusMessage
+    shouldUseLongText
   } = useLongTextTTS({
     apiBaseUrl,
     sessionId
@@ -184,7 +183,6 @@ export default function TTSPage() {
     searchJobs: searchLongTextJobs,
     updateSort: updateLongTextSort,
     clearHistory: clearLongTextHistory,
-    refetchHistory: refetchLongTextHistory,
     updateSettings: updateLongTextHistorySettings
   } = useLongTextHistory({
     apiBaseUrl,
@@ -211,7 +209,6 @@ export default function TTSPage() {
   const {
     progress,
     statistics,
-    isProcessing,
     hasError: statusHasError,
     isLoadingStats
   } = useStatusMonitoring(apiBaseUrl);
@@ -275,102 +272,81 @@ export default function TTSPage() {
   });
 
 
-  // --- AUDIOBOOK FILE PROCESSING ---
-  const handleAudiobookFilesSelected = async (files: FileList) => {
+  // --- DUAL-BUTTON UPLOAD HANDLERS ---
+  const handleIndexSelected = async (file: File) => {
     setIsProcessingFiles(true);
     try {
-      const fileData: Record<string, any> = {};
-      
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        if (!file.name.endsWith('.json')) continue; 
-        
-        const content = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = (e) => resolve(e.target?.result as string);
-          reader.onerror = (e) => reject(e);
-          reader.readAsText(file);
+      const content = await file.text();
+      const json = JSON.parse(content);
+      setIndexData(json);
+      if (json.title) setProjectTitle(json.title);
+      if (json.cast && Array.isArray(json.cast)) {
+        setCastList(json.cast);
+        const newMapping: Record<string, string> = {};
+        json.cast.forEach((member: CastMember) => {
+          const match = voices.find(v => v.name.toLowerCase() === member.character.toLowerCase());
+          newMapping[member.character] = match ? match.name : "";
         });
-        
-        try {
-          fileData[file.name] = JSON.parse(content);
-        } catch (err) {
-          console.error(`Failed to parse ${file.name}:`, err);
-        }
+        setVoiceMapping(newMapping);
       }
-
-      if (!fileData['index.json']) {
-        throw new Error("Missing 'index.json'. Please select the entire script folder including index.json and all chapter files.");
-      }
-
-      const index = fileData['index.json'];
-      if (index.title) {
-        setProjectTitle(index.title);
-      }
-
-      const chapters = [];
-      if (index.chapters && Array.isArray(index.chapters)) {
-        for (const chapMeta of index.chapters) {
-          const chapData = fileData[chapMeta.file];
-          if (chapData) {
-            chapters.push({
-              title: chapData.scene_title || chapMeta.scene_title || chapMeta.file,
-              script_lines: chapData.script_lines || []
-            });
-          }
-        }
-      }
-
-      const newCastList = index.cast || [];
-      const newMapping: Record<string, string> = {};
-
-      newCastList.forEach((member: CastMember) => {
-        const match = voices.find(v => v.name.toLowerCase() === member.character.toLowerCase());
-        newMapping[member.character] = match ? match.name : "";
-      });
-
-      setCastList(newCastList);
-      setChaptersData(chapters);
-      setVoiceMapping(newMapping);
-
+      alert("index.json loaded successfully!");
     } catch (err: any) {
-      alert(err.message || "Failed to process audiobook batch.");
+      alert("Failed to parse index.json: " + (err.message || err));
     } finally {
       setIsProcessingFiles(false);
     }
   };
 
+  const handleChaptersSelected = async (files: FileList) => {
+    setIsProcessingFiles(true);
+    try {
+      const newChapters = [];
+      for (let i = 0; i < files.length; i++) {
+        const content = await files[i].text();
+        const json = JSON.parse(content);
+        if (json.script_lines) {
+          newChapters.push({
+            title: json.scene_title || files[i].name,
+            script_lines: json.script_lines
+          });
+        }
+      }
+      setChaptersData(newChapters);
+      alert(`Successfully loaded ${newChapters.length} chapter file(s)!`);
+    } catch (err: any) {
+      alert("Failed to parse chapter files: " + (err.message || err));
+    } finally {
+      setIsProcessingFiles(false);
+    }
+  };
+
+
   const handleGenerate = async () => {
     
-    // --- AUDIOBOOK GENERATION ROUTE ---
+    // --- AUDIOBOOK GENERATION ROUTE (UI TRACKED) ---
     if (isAudiobookMode) {
+        if (!indexData) {
+            alert("Please upload your index.json file first.");
+            return;
+        }
         if (chaptersData.length === 0) {
-            alert("No chapters loaded. Please upload a valid script batch first.");
+            alert("Please upload your chapter JSON file(s).");
             return;
         }
 
-        setIsClickedGenerating(true);
         try {
           const batchPayload = {
+            project_title: projectTitle || "Audiobook Batch",
             chapters: chaptersData,
             mapping_dict: voiceMapping
           };
 
-          const res = await fetch(`${apiBaseUrl}/audiobook/generate`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(batchPayload)
-          });
+          // Hook into the existing UI tracking and job monitor
+          trackRequest(sessionId, 'long-text');
+          await submitAudiobookJob(batchPayload as any);
           
-          if (!res.ok) {
-            throw new Error(`Server returned ${res.status}: ${await res.text()}`);
-          }
-          
-          alert("Audiobook batch submitted! Check your Docker terminal to watch the engine process the chapters.");
         } catch (e: any) {
           alert("Submission failed: " + (e.message || e));
-        } finally {
-          setIsClickedGenerating(false);
         }
         return;
     }
@@ -553,7 +529,7 @@ export default function TTSPage() {
               />
             </div>
 
-            {/* Text Input */}
+            {/* Text Input with Dual-Button Audiobook Upload */}
             <TextInput
               value={text}
               onChange={updateText} 
@@ -561,6 +537,7 @@ export default function TTSPage() {
                   clearText();
                   setCastList([]);
                   setChaptersData([]);
+                  setIndexData(null);
               }}
               hasText={hasText || chaptersData.length > 0}             
               isStreamingEnabled={isStreamingEnabled}  
@@ -572,7 +549,8 @@ export default function TTSPage() {
                   toggleStreaming(); 
                 }
               }}
-              onFilesSelected={handleAudiobookFilesSelected}
+              onIndexSelected={handleIndexSelected}
+              onChaptersSelected={handleChaptersSelected}
             />
 
             {/* --- AUDIOBOOK CHARACTER MAPPING UI --- */}
@@ -766,14 +744,14 @@ export default function TTSPage() {
             {/* Generate Button */}
             <Button
               onClick={handleGenerate}
-              disabled={isGenerating || (isAudiobookMode ? chaptersData.length === 0 : !hasText)}
+              disabled={isGenerating || (isAudiobookMode ? (!indexData || chaptersData.length === 0) : !hasText)}
               className="w-full py-6 px-6 text-xl [&_svg]:size-6 [&_svg:not([class*='size-'])]:size-6 flex gap-4 mt-4"
             >
               <Volume2 className="w-5 h-5 mr-2" />
               {isGenerating ? (isStreaming ? 'Streaming...' : 'Generating...') : (isAudiobookMode ? 'Generate Audiobook Batch' : 'Generate Speech')}
             </Button>
 
-            {/* Audio Player - Only show for non-streaming audio or completed streaming */}
+            {/* Audio Player */}
             {currentAudioUrl && !isStreaming && !isAudiobookMode && (
               <AudioPlayer audioUrl={currentAudioUrl} />
             )}
@@ -814,10 +792,9 @@ export default function TTSPage() {
           </div>
         )}
 
-        {/* History Section with Tabs */}
+        {/* History Section */}
         {!isAudiobookMode && (
             <div className="w-full max-w-3xl mx-auto mt-8">
-            {/* History Tabs */}
             <div className="flex border-b border-border mb-4">
                 <button
                 onClick={() => updateHistoryTab('regular')}
@@ -839,7 +816,6 @@ export default function TTSPage() {
                 </button>
             </div>
 
-            {/* History Content */}
             {historyTab === 'regular' ? (
                 <AudioHistory
                 audioHistory={audioHistory}

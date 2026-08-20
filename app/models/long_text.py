@@ -63,7 +63,8 @@ class LongTextJobMetadata(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     status: LongTextJobStatus = Field(default=LongTextJobStatus.PENDING)
-    text_length: int = Field(..., ge=3001, description="Total characters in input text")
+    # Changed ge=3001 to ge=1 to allow short audiobook testing
+    text_length: int = Field(..., ge=1, description="Total characters in input text")
     text_hash: str = Field(..., description="SHA256 hash of input text for deduplication")
     total_chunks: int = Field(..., ge=1, description="Total number of chunks")
     completed_chunks: int = Field(default=0, ge=0, description="Number of completed chunks")

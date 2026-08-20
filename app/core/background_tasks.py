@@ -308,18 +308,25 @@ class LongTextProcessor:
         
         try:
             payload = json.loads(input_text)
-            script_lines = payload.get("script_lines", [])
-            if not script_lines:
-                await self._fail_job(job_id, "Audiobook payload contains no script_lines")
+            chapters = payload.get("chapters", [])
+            mapping_dict = payload.get("mapping_dict", {})
+            
+            if not chapters:
+                await self._fail_job(job_id, "Audiobook payload contains no chapters")
                 return
 
             paths = self.job_manager._get_job_file_paths(job_id)
             temp_dir = paths['output_dir'].parent / "temp"
             temp_dir.mkdir(exist_ok=True)
             
-            # Map script lines into LongTextChunks so the React UI Progress Bar works perfectly
+            # Extract all script lines across all chapters into a flat list
+            flat_script_lines = []
+            for chapter in chapters:
+                flat_script_lines.extend(chapter.get("script_lines", []))
+            
+            # Map script lines into LongTextChunks so the UI Progress Bar works perfectly
             chunks = []
-            for i, line in enumerate(script_lines):
+            for i, line in enumerate(flat_script_lines):
                 char_name = line.get("character", "Narrator")
                 raw_text = line.get("spoken_text", "")
                 
@@ -331,7 +338,15 @@ class LongTextProcessor:
                 clean_spoken = re.sub(r'\[(.*?)\]', clean_tag, raw_text)
                 clean_spoken = re.sub(r'\s+', ' ', clean_spoken).strip()
 
-                chunk = LongTextChunk(index=i, text=f"{char_name}: {clean_spoken}")
+                display_text = f"{char_name}: {clean_spoken}"
+                
+                # Fix P0-03: Construct valid LongTextChunk with required fields
+                chunk = LongTextChunk(
+                    index=i, 
+                    text=display_text,
+                    text_preview=display_text[:50],
+                    character_count=len(display_text)
+                )
                 chunks.append(chunk)
 
             metadata.total_chunks = len(chunks)
@@ -340,10 +355,14 @@ class LongTextProcessor:
 
             await self._update_job_status(job_id, LongTextJobStatus.PROCESSING, "Generating audiobook dialogue")
 
+            # Fix P0-04: Treat list_voices() results as dictionaries
             voice_lib = get_voice_library()
-            saved_voices = [v.name for v in voice_lib.list_voices()]
-            if not saved_voices:
-                saved_voices = ["Narrator"] 
+            voice_records = voice_lib.list_voices()
+            voice_paths = {
+                record["name"]: voice_lib.get_voice_path(record["name"])
+                for record in voice_records
+            }
+            saved_voices = list(voice_paths.keys())
 
             # ------------------------------------------------------------------
             # PHASE 1: STANDARD MODEL (DIALOGUE)
@@ -352,7 +371,7 @@ class LongTextProcessor:
             standard_model = ChatterboxTTS.from_pretrained(device="cpu")
             generated_segments = []
 
-            for idx, line in enumerate(script_lines):
+            for idx, line in enumerate(flat_script_lines):
                 current_metadata = self.job_manager._load_job_metadata(job_id)
                 if current_metadata and current_metadata.status in [LongTextJobStatus.PAUSED, LongTextJobStatus.CANCELLED]:
                     del standard_model
@@ -364,10 +383,15 @@ class LongTextProcessor:
                 self.job_manager._save_chunks_data(job_id, chunks)
 
                 char_name = line.get("character", "Narrator")
-                voice_name = resolve_voice_file_name(char_name, saved_voices)
                 
-                voice_info = voice_lib.get_voice(voice_name)
-                original_ref = str(voice_info.file_path) if voice_info else os.path.join(Config.VOICE_LIBRARY_DIR, f"{saved_voices[0]}.wav")
+                # Fix P0-04: Resolve explicit registered voices from the mapping_dict
+                voice_name = mapping_dict.get(char_name)
+                voice_path = voice_paths.get(voice_name) if voice_name else None
+                
+                if not voice_path:
+                    raise ValueError(f"No registered voice mapping for character: {char_name}")
+                
+                original_ref = str(voice_path)
                 safe_ref = get_safe_ref(original_ref, temp_dir=str(temp_dir))
                 base_path = str(temp_dir / f"temp_{idx}_base.wav")
                 
@@ -394,7 +418,6 @@ class LongTextProcessor:
                     "safe_ref": safe_ref
                 })
 
-                # Register chunk completion to push the UI progress bar forward
                 chunk.audio_file = f"temp_{idx}_base.wav"
                 chunk.processing_completed_at = datetime.utcnow()
                 chunk.duration_ms = int((chunk.processing_completed_at - chunk.processing_started_at).total_seconds() * 1000)
@@ -456,7 +479,7 @@ class LongTextProcessor:
                             mixed_line += AudioSegment.from_wav(tag_f) + AudioSegment.silent(duration=150)
                         mixed_line += base_seg
                     else:
-                        pauses = silence.detect_silences(base_seg, min_silence_len=250, silence_thresh=base_seg.dBFS - 14)
+                        pauses = silence.detect_silence(base_seg, min_silence_len=250, silence_thresh=base_seg.dBFS - 14)
                         cur_pos = 0
                         for i, tag_f in enumerate(foley_files):
                             if i < len(pauses):

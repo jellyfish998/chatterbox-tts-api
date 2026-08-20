@@ -1,6 +1,5 @@
 import React, { useRef } from 'react';
 import { X, Zap, Volume2, BookOpen, FileText, UploadCloud } from 'lucide-react';
-import { Textarea } from '../ui/textarea';
 import { Card, CardContent } from '../ui/card';
 
 interface TextInputProps {
@@ -14,7 +13,8 @@ interface TextInputProps {
   onToggleStreaming?: () => void;
   isAudiobookMode?: boolean;
   onToggleAudiobookMode?: () => void;
-  onFilesSelected?: (files: FileList) => void; // <--- NEW PROP
+  onIndexSelected?: (file: File) => void;
+  onChaptersSelected?: (files: FileList) => void;
 }
 
 export default function TextInput({
@@ -28,36 +28,12 @@ export default function TextInput({
   onToggleStreaming,
   isAudiobookMode = false,
   onToggleAudiobookMode,
-  onFilesSelected
+  onIndexSelected,
+  onChaptersSelected
 }: TextInputProps) {
   
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-
-    if (!isAudiobookMode) {
-      // Standard Mode: Just read the first file as plain text
-      const file = files[0];
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        if (event.target?.result) {
-          onChange(event.target.result as string);
-        }
-      };
-      reader.readAsText(file);
-    } else {
-      // Audiobook Mode: Pass the files up to TTSPage to handle the heavy lifting
-      if (onFilesSelected) {
-          onFilesSelected(files);
-      }
-    }
-    
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  };
+  const indexInputRef = useRef<HTMLInputElement>(null);
+  const chaptersInputRef = useRef<HTMLInputElement>(null);
 
   return (
     <Card className="">
@@ -68,22 +44,59 @@ export default function TextInput({
           </label>
           <div className="flex items-center gap-2">
             
+            {/* Hidden inputs for Index and Chapters */}
             <input 
               type="file" 
-              ref={fileInputRef} 
-              onChange={handleFileUpload} 
-              accept=".txt,.json" 
+              ref={indexInputRef} 
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file && onIndexSelected) onIndexSelected(file);
+                if (indexInputRef.current) indexInputRef.current.value = '';
+              }} 
+              accept=".json" 
+              className="hidden" 
+            />
+
+            <input 
+              type="file" 
+              ref={chaptersInputRef} 
+              onChange={(e) => {
+                const files = e.target.files;
+                if (files && files.length > 0 && onChaptersSelected) onChaptersSelected(files);
+                if (chaptersInputRef.current) chaptersInputRef.current.value = '';
+              }} 
+              accept=".json" 
               multiple 
               className="hidden" 
             />
 
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              className="flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-muted text-muted-foreground hover:bg-muted/80 border border-border transition-colors duration-200"
-            >
-              <UploadCloud className="w-3 h-3" />
-              {isAudiobookMode ? "Upload Script Batch" : "Upload Script"}
-            </button>
+            {/* Audiobook Dual Buttons */}
+            {isAudiobookMode ? (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => indexInputRef.current?.click()}
+                  className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-md bg-primary/10 text-primary hover:bg-primary/20 border border-primary/30 transition-colors duration-200 font-medium"
+                >
+                  <UploadCloud className="w-3.5 h-3.5" />
+                  Upload index.json
+                </button>
+                <button
+                  onClick={() => chaptersInputRef.current?.click()}
+                  className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-md bg-muted text-muted-foreground hover:bg-muted/80 border border-border transition-colors duration-200 font-medium"
+                >
+                  <UploadCloud className="w-3.5 h-3.5" />
+                  Upload Chapters
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => chaptersInputRef.current?.click()}
+                className="flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-muted text-muted-foreground hover:bg-muted/80 border border-border transition-colors duration-200"
+              >
+                <UploadCloud className="w-3 h-3" />
+                Upload Script
+              </button>
+            )}
 
             {onToggleAudiobookMode && (
               <button
@@ -123,19 +136,15 @@ export default function TextInput({
           </div>
         </div>
 
-        {/* The Textarea is completely hidden in Audiobook mode to prevent user meddling */}
+        {/* Hidden textarea when in audiobook mode to save space */}
         {!isAudiobookMode && (
-            <>
-                <Textarea
-                value={value}
-                onChange={(e) => onChange(e.target.value)}
-                className="h-32 font-mono text-sm"
-                placeholder={placeholder}
-                />
-                <div className="text-right text-sm text-muted-foreground mt-1">
-                {value.length}/{maxLength} characters
-                </div>
-            </>
+          <textarea
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder={placeholder}
+            maxLength={maxLength}
+            className="w-full h-32 p-3 bg-transparent border-0 focus:ring-0 resize-none text-foreground placeholder:text-muted-foreground"
+          />
         )}
       </CardContent>
     </Card>
