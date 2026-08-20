@@ -356,7 +356,7 @@ export default function TTSPage() {
             mapping_dict: voiceMapping
           };
 
-          const res = await fetch('/v1/audiobook/generate', {
+          const res = await fetch(`${apiBaseUrl}/audiobook/generate`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(batchPayload)
