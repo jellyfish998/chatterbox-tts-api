@@ -1,22 +1,22 @@
-# ==============================================================================
-# [NEW FILE: app/api/endpoints/audiobook.py]
-# ==============================================================================
+from fastapi import APIRouter, BackgroundTasks, HTTPException
+from pydantic import BaseModel
 import os
 import re
 import shutil
-import subprocess
 import json
-from pathlib import Path
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 import yt_dlp
+import hashlib
+from datetime import datetime
+from pathlib import Path
 from pydub import AudioSegment, effects
 
-from app.core.long_text_jobs import get_job_manager
-from app.models.requests import AudiobookBatchRequest
 from app.config import Config
+from app.core.long_text_jobs import get_job_manager
+from app.core.background_tasks import _process_audiobook_job
+from app.models.requests import AudiobookBatchRequest
 
 base_router = APIRouter()
+router = base_router  
 
 class YouTubeExtractionRequest(BaseModel):
     url: str
@@ -26,96 +26,121 @@ class YouTubeExtractionRequest(BaseModel):
 
 @base_router.post("/youtube")
 def extract_youtube_voice(req: YouTubeExtractionRequest):
-    # P0-08: Use Config paths to ensure Docker volume persistence
-    voices_dir = Path(Config.VOICE_LIBRARY_DIR)
-    output_dir = Path(Config.LONG_TEXT_DATA_DIR) / "temp_yt"
-    
-    voices_dir.mkdir(parents=True, exist_ok=True)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    clean_name = re.sub(r'[^a-zA-Z0-9_\- ]', '_', req.voice_name.strip())
-    dest_path = voices_dir / f"{clean_name}.wav"
-    temp_dir = output_dir / f"temp_pipeline_{clean_name}"
+    clean_name = re.sub(r'[^a-zA-Z0-9_-]', '_', req.voice_name.strip())
+    dest_path = Path(Config.VOICE_LIBRARY_DIR) / f"{clean_name}.wav"
+    temp_dir = Path(Config.LONG_TEXT_DATA_DIR) / f"temp_voice_hunter_{clean_name}"
     temp_dir.mkdir(parents=True, exist_ok=True)
-    raw_download_path = temp_dir / "raw_download.wav"
-
-    clean_env = os.environ.copy()
-    clean_env.pop("DEVICE", None)
-    clean_env["DEVICE"] = "cpu"
-
+    
     try:
-        # Force yt-dlp and ffmpeg to only fetch and process the exact segment we need
+        buffer_seconds = 5.0
         ydl_opts = {
             'format': 'bestaudio/best',
             'outtmpl': str(temp_dir / 'raw_download'),
             'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'wav'}],
             'quiet': True,
-            'download_ranges': lambda info, ydl: [{'start_time': req.start_time, 'end_time': req.start_time + req.duration}],
+            'download_ranges': lambda info, ctx: [{'start_time': max(0, req.start_time - buffer_seconds), 'end_time': req.start_time + req.duration + buffer_seconds}],
             'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
             'http_headers': {'User-Agent': 'Mozilla/5.0'}
         }
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([req.url])
-
-        subprocess.run(
-            ["python", "-m", "demucs", "--two-stems=vocals", "-o", str(temp_dir), str(raw_download_path)],
-            check=True, capture_output=True, env=clean_env
-        )
-        vocal_stem_path = temp_dir / "htdemucs" / "raw_download" / "vocals.wav"
-
-        audio = AudioSegment.from_file(str(vocal_stem_path))
-        start_ms = int(req.start_time * 1000)
-        end_ms = start_ms + int(req.duration * 1000)
-        sliced_audio = audio[start_ms:end_ms].set_frame_rate(24000).set_channels(1)
-
-        sliced_audio = effects.normalize(sliced_audio)
-
-        while len(sliced_audio) < 5500:
-            sliced_audio += sliced_audio
-
-        sliced_audio.export(str(dest_path), format="wav")
+            
+        downloaded_file = list(temp_dir.glob("raw_download.wav"))[0]
         
+        audio = AudioSegment.from_wav(str(downloaded_file))
+        audio = effects.normalize(audio)
+        
+        actual_buffer_ms = min(req.start_time, buffer_seconds) * 1000
+        end_ms = actual_buffer_ms + int(req.duration * 1000)
+        
+        sliced_audio = audio[int(actual_buffer_ms):int(end_ms)].set_frame_rate(24000).set_channels(1)
+        
+        while len(sliced_audio) < 5500:
+            sliced_audio = sliced_audio.append(sliced_audio, crossfade=50)
+            
+        sliced_audio.export(str(dest_path), format="wav")
         return {"status": "success", "voice": clean_name}
-
-    except subprocess.CalledProcessError as e:
-        err_msg = e.stderr.decode('utf-8', errors='ignore') if e.stderr else str(e)
-        raise HTTPException(status_code=500, detail=f"Pipeline crash: {err_msg}")
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
-
 @base_router.post("/generate")
-async def start_batch_generation(req: AudiobookBatchRequest):
-    from app.core.background_tasks import get_processor
-    
+def start_batch_generation(req: AudiobookBatchRequest, background_tasks: BackgroundTasks):
     job_manager = get_job_manager()
-    processor = get_processor()
+    total_length = sum(len(line.spoken_text) for chap in req.chapters for line in chap.script_lines)
     
-    req_dict = req.model_dump() if hasattr(req, 'model_dump') else req.dict()
-    project_title = req_dict.get("project_title", "Audiobook")
-    json_payload = req_dict.get("json_payload", req_dict)
-
-    # 1. Create the official job placeholder so the UI knows it exists
-    job_id, _ = job_manager.create_job(
-        text=json.dumps(json_payload),
-        voice="Audiobook_Batch",
-        output_format="mp3"
-    )
-    
-    # 2. Add our custom Audiobook flags to the metadata
-    metadata = job_manager._load_job_metadata(job_id)
-    if metadata:
-        metadata.parameters["is_audiobook"] = True
-        metadata.display_name = f"Audiobook: {project_title}"
-        job_manager._save_job_metadata(metadata)
+    # 1. Register with SQLite so the SSE endpoint connects!
+    job_id, _ = job_manager.create_job(text=f"Audiobook: {req.project_title}")
         
-    # 3. Fire off the background worker natively through the existing processor
-    await processor.submit_job(job_id)
+    # 2. Force the metadata to "processing" in the DB so the standard worker doesn't steal it
+    try:
+        db_job = None
+        for getter_name in ['get_job_metadata', 'get_job_details', 'get_job_record', 'get_metadata', 'get_job']:
+            if hasattr(job_manager, getter_name):
+                try:
+                    db_job = getattr(job_manager, getter_name)(job_id)
+                    if db_job: break
+                except Exception:
+                    pass
+
+        if db_job:
+            metadata = getattr(db_job, 'metadata', db_job)
+            metadata.status = "processing"
+            metadata.total_chunks = max(len(req.chapters), 1)
+            metadata.voice = "Multi-Cast Map"
+            metadata.output_format = "wav"
+            metadata.parameters = req.dict()
+            metadata.text_length = max(total_length, 1)
+            
+            for saver_name in ['save_job_metadata', 'update_job_metadata', 'save_metadata', 'save_job']:
+                if hasattr(job_manager, saver_name):
+                    try:
+                        getattr(job_manager, saver_name)(db_job)
+                        break
+                    except Exception:
+                        try:
+                            getattr(job_manager, saver_name)(metadata)
+                            break
+                        except Exception:
+                            pass
+    except Exception as e:
+        print(f"⚠️ [Audiobook] DB Metadata override failed: {e}")
+
+    # 3. Write securely to disk as a final safeguard
+    try:
+        job_dir = Path(Config.LONG_TEXT_DATA_DIR) / job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
+        metadata_path = job_dir / "metadata.json"
+        
+        now_iso = datetime.utcnow().isoformat()
+        md = {
+            "job_id": job_id,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+            "status": "processing",
+            "text_length": max(total_length, 1),
+            "text_hash": hashlib.md5(f"audiobook_{job_id}".encode()).hexdigest(),
+            "total_chunks": max(len(req.chapters), 1),
+            "completed_chunks": 0,
+            "failed_chunks": [],
+            "current_chunk": 0,
+            "voice": "Multi-Cast Map",
+            "parameters": req.dict(),
+            "processing_started_at": now_iso,
+            "output_format": "wav",
+            "display_name": f"Audiobook: {req.project_title}",
+            "tags": ["audiobook"],
+            "is_archived": False,
+            "retry_count": 0
+        }
+        with open(metadata_path, 'w', encoding='utf-8') as f:
+            json.dump(md, f, indent=4)
+    except Exception as e:
+        print(f"⚠️ [Audiobook] Disk Metadata override failed: {e}")
+        
+    background_tasks.add_task(_process_audiobook_job, job_id, req.dict())
     
-    return {
-        "status": "success", 
-        "job_id": job_id,
-        "message": "Audiobook generation queued."
-    }
+    return {"job_id": job_id, "status": "processing", "message": "Audiobook batch job queued successfully."}

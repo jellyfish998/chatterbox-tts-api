@@ -89,18 +89,13 @@ export function useLongTextTTS({ apiBaseUrl, sessionId }: UseLongTextTTSProps) {
     });
   }, []);
 
-  const submitAudiobookJob = useCallback(
-    (request: AudiobookBatchRequest) => service.submitAudiobookJob(request),
-    [service]
-  );
-  
   const extractYoutubeVoice = useCallback(
     (url: string, startTime: number, duration: number, voiceName: string) =>
       service.extractYoutubeVoice(url, startTime, duration, voiceName),
     [service]
   );
 
-  // Submit new job mutation
+  // --- STANDARD JOB MUTATION ---
   const submitJobMutation = useMutation({
     mutationFn: service.submitJob,
     onSuccess: (response) => {
@@ -110,7 +105,28 @@ export function useLongTextTTS({ apiBaseUrl, sessionId }: UseLongTextTTSProps) {
         error: null,
         isJobActive: true
       }));
-      // Start monitoring this job
+      startJobMonitoring(response.job_id);
+    },
+    onError: (error: Error) => {
+      setState(prev => ({
+        ...prev,
+        error: error.message,
+        isJobActive: false
+      }));
+    }
+  });
+
+  // --- AUDIOBOOK JOB MUTATION (NEW) ---
+  const submitAudiobookMutation = useMutation({
+    mutationFn: service.submitAudiobookJob,
+    onSuccess: (response) => {
+      // The API returns the job_id. We register it so the UI knows to watch it.
+      addJobId(response.job_id);
+      setState(prev => ({
+        ...prev,
+        error: null,
+        isJobActive: true
+      }));
       startJobMonitoring(response.job_id);
     },
     onError: (error: Error) => {
@@ -175,7 +191,7 @@ export function useLongTextTTS({ apiBaseUrl, sessionId }: UseLongTextTTSProps) {
     }
   }, []);
 
-  // Download completed audio (defined before startJobMonitoring to avoid forward reference)
+  // Download completed audio
   const downloadCompletedAudio = useCallback(async (jobId: string) => {
     try {
       const audioBlob = await service.downloadJobAudio(jobId);
@@ -201,20 +217,16 @@ export function useLongTextTTS({ apiBaseUrl, sessionId }: UseLongTextTTSProps) {
         setState(prev => {
           let newState = { ...prev };
 
-          // Update progress if provided (check that data exists first)
           if (event.data && event.data.progress !== undefined) {
             newState.progress = event.data.progress;
           }
 
-          // Handle different event types
           switch (event.event_type) {
             case 'completed':
             case 'job_completed':
               console.log(`Long text job ${jobId} completed, setting isJobActive to false`);
               newState.isJobActive = false;
-              // Remove job from tracking since it's completed
               removeJobId(jobId);
-              // Trigger download of completed audio
               downloadCompletedAudio(jobId);
               break;
 
@@ -223,21 +235,18 @@ export function useLongTextTTS({ apiBaseUrl, sessionId }: UseLongTextTTSProps) {
               console.log(`Long text job ${jobId} failed, setting isJobActive to false`);
               newState.isJobActive = false;
               newState.error = event.data?.error || event.data?.message || 'Job failed';
-              // Remove job from tracking since it failed
               removeJobId(jobId);
               break;
 
             case 'job_paused':
-              // Job is paused but still active (can be resumed)
               break;
 
             case 'job_resumed':
-              newState.error = null; // Clear any previous errors
+              newState.error = null;
               break;
 
             case 'progress':
             case 'chunk_completed':
-              // Progress updates are handled above
               break;
           }
 
@@ -267,7 +276,6 @@ export function useLongTextTTS({ apiBaseUrl, sessionId }: UseLongTextTTSProps) {
         error: jobResponse.job.error || null
       }));
 
-      // If job is completed and we don't have audio yet, download it
       if (jobResponse.job.status === 'completed' && !state.audioUrl) {
         downloadCompletedAudio(jobId);
       }
@@ -280,9 +288,8 @@ export function useLongTextTTS({ apiBaseUrl, sessionId }: UseLongTextTTSProps) {
     }
   }, [service, state.audioUrl, downloadCompletedAudio]);
 
-  // Submit a new long text TTS job
+  // Submit standard job
   const submitJob = useCallback((request: LongTextRequest) => {
-    // Clear previous state
     setState(prev => ({
       ...prev,
       currentJob: null,
@@ -290,9 +297,21 @@ export function useLongTextTTS({ apiBaseUrl, sessionId }: UseLongTextTTSProps) {
       error: null,
       audioUrl: null
     }));
-
     return submitJobMutation.mutate(request);
   }, [submitJobMutation]);
+
+  // Submit audiobook job
+  const submitAudiobookJob = useCallback((request: AudiobookBatchRequest) => {
+    setState(prev => ({
+      ...prev,
+      currentJob: null,
+      progress: null,
+      error: null,
+      audioUrl: null
+    }));
+    // We use mutateAsync so the caller in TTSPage.tsx can await the promise to show the success alert
+    return submitAudiobookMutation.mutateAsync(request);
+  }, [submitAudiobookMutation]);
 
   // Control job functions
   const pauseJob = useCallback((jobId: string) => {
@@ -324,7 +343,6 @@ export function useLongTextTTS({ apiBaseUrl, sessionId }: UseLongTextTTSProps) {
   useEffect(() => {
     return () => {
       cleanupSSE();
-      // Clean up audio URL if it exists
       if (state.audioUrl) {
         URL.revokeObjectURL(state.audioUrl);
       }
@@ -344,7 +362,6 @@ export function useLongTextTTS({ apiBaseUrl, sessionId }: UseLongTextTTSProps) {
         setState(prev => ({ ...prev, isJobActive: true }));
         startJobMonitoring(activeJob.job_id);
       } else if (!activeJob && state.isJobActive) {
-        // No active jobs found but state thinks there's an active job - clear it
         console.log('No active jobs found, clearing isJobActive state');
         setState(prev => ({ ...prev, isJobActive: false }));
       }
@@ -381,8 +398,8 @@ export function useLongTextTTS({ apiBaseUrl, sessionId }: UseLongTextTTSProps) {
     shouldUseLongText,
     getStatusMessage,
 
-    // Loading states
-    isSubmitting: submitJobMutation.isPending,
+    // Loading states. If either standard or audiobook is running, mark as submitting.
+    isSubmitting: submitJobMutation.isPending || submitAudiobookMutation.isPending,
     isPausing: pauseJobMutation.isPending,
     isResuming: resumeJobMutation.isPending,
     isCancelling: cancelJobMutation.isPending,

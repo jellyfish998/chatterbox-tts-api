@@ -59,6 +59,7 @@ export default function TTSPage() {
   const [indexData, setIndexData] = useState<any>(null);
   const [castList, setCastList] = useState<CastMember[]>([]);
   const [chaptersData, setChaptersData] = useState<any[]>([]);
+  const [checkedChapters, setCheckedChapters] = useState<Record<string, boolean>>({});
   const [voiceMapping, setVoiceMapping] = useState<Record<string, string>>({});
   const [isProcessingFiles, setIsProcessingFiles] = useState(false);
   
@@ -298,28 +299,95 @@ export default function TTSPage() {
   };
 
   const handleChaptersSelected = async (files: FileList) => {
+    if (!files || files.length === 0) return;
+    
+    // THE MAGIC FIX: Freeze the live FileList into a static array instantly
+    const filesArray = Array.from(files);
+    
     setIsProcessingFiles(true);
+    
     try {
-      const newChapters = [];
-      for (let i = 0; i < files.length; i++) {
-        const content = await files[i].text();
-        const json = JSON.parse(content);
-        if (json.script_lines) {
-          newChapters.push({
-            title: json.scene_title || files[i].name,
-            script_lines: json.script_lines
-          });
+      const chaptersList: any[] = [];
+      const initChecked: Record<string, boolean> = {};
+      let parsedChapters = 0;
+      let foundIndex = false;
+      
+      // Loop over the static array, not the live FileList
+      for (let i = 0; i < filesArray.length; i++) {
+        const file = filesArray[i];
+        const lowerName = (file.name || "").toLowerCase();
+        
+        // Skip non-data files
+        if (lowerName.endsWith('.pdf') || lowerName.endsWith('.mp3') || lowerName.endsWith('.wav')) {
+            continue;
+        }
+
+        try {
+            const content = await file.text();
+            const json = JSON.parse(content);
+
+            // --- 1. INDEX DETECTION ---
+            if (lowerName.includes('index') || json.cast) {
+                setIndexData(json);
+                if (json.title) setProjectTitle(json.title);
+                
+                if (json.cast && Array.isArray(json.cast)) {
+                    setCastList(json.cast);
+                    const newMapping: Record<string, string> = {};
+                    json.cast.forEach((member: CastMember) => {
+                        const match = voices.find(v => v.name.toLowerCase() === member.character.toLowerCase());
+                        newMapping[member.character] = match ? match.name : "";
+                    });
+                    setVoiceMapping(newMapping);
+                }
+                foundIndex = true;
+                continue;
+            }
+              
+            // --- 2. CHAPTER DETECTION ---
+            if (json.script_lines || json.chapters || Array.isArray(json)) {
+                const targetLines = json.script_lines || (Array.isArray(json) ? json : null);
+                
+                if (targetLines) {
+                    let baseTitle = json.scene_title || file.name.replace(/\.json|\.txt/gi, '').split('/').pop() || 'Chapter';
+                    let finalTitle = baseTitle;
+                    let counter = 2;
+
+                    while (chaptersList.some(c => c.title === finalTitle)) {
+                        finalTitle = `${baseTitle} (Part ${counter})`;
+                        counter++;
+                    }
+
+                    chaptersList.push({
+                        title: finalTitle,
+                        filename: file.name,
+                        script_lines: targetLines
+                    });
+                    initChecked[finalTitle] = true;
+                    parsedChapters++;
+                }
+            }
+            
+        } catch (e: any) {
+            console.error(`Failed to parse ${file.name}:`, e.message);
         }
       }
-      setChaptersData(newChapters);
-      alert(`Successfully loaded ${newChapters.length} chapter file(s)!`);
-    } catch (err: any) {
-      alert("Failed to parse chapter files: " + (err.message || err));
+      
+      setChaptersData(chaptersList);
+      setCheckedChapters(initChecked);
+      
+      if (!foundIndex) {
+          alert(`Loaded ${parsedChapters} chapter(s), but index was missing!`);
+      } else {
+          alert(`Success!\nIndex parsed.\n${parsedChapters} chapter(s) loaded.`);
+      }
+      
+    } catch (e: any) {
+      alert("Folder ingestion failed: " + e.message);
     } finally {
       setIsProcessingFiles(false);
     }
   };
-
 
   const handleGenerate = async () => {
     

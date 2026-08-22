@@ -3,7 +3,7 @@ Request models for API validation
 """
 
 from typing import Optional, List, Dict
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, validator
 
 
 class TTSRequest(BaseModel):
@@ -26,15 +26,13 @@ class TTSRequest(BaseModel):
     streaming_buffer_size: Optional[int] = Field(None, description="Number of chunks to buffer", ge=1, le=10)
     streaming_quality: Optional[str] = Field(None, description="Speed vs quality trade-off")
     
-    @field_validator('input')
-    @classmethod
+    @validator('input')
     def validate_input(cls, v):
         if not v or not v.strip():
             raise ValueError('Input text cannot be empty')
         return v.strip()
     
-    @field_validator('stream_format')
-    @classmethod
+    @validator('stream_format')
     def validate_stream_format(cls, v):
         if v is not None:
             allowed_formats = ['audio', 'sse']
@@ -42,8 +40,7 @@ class TTSRequest(BaseModel):
                 raise ValueError(f'stream_format must be one of: {", ".join(allowed_formats)}')
         return v
     
-    @field_validator('streaming_strategy')
-    @classmethod
+    @validator('streaming_strategy')
     def validate_streaming_strategy(cls, v):
         if v is not None:
             allowed_strategies = ['sentence', 'paragraph', 'fixed', 'word']
@@ -51,17 +48,13 @@ class TTSRequest(BaseModel):
                 raise ValueError(f'streaming_strategy must be one of: {", ".join(allowed_strategies)}')
         return v
     
-    @field_validator('streaming_quality')
-    @classmethod
+    @validator('streaming_quality')
     def validate_streaming_quality(cls, v):
         if v is not None:
             allowed_qualities = ['fast', 'balanced', 'high']
             if v not in allowed_qualities:
                 raise ValueError(f'streaming_quality must be one of: {", ".join(allowed_qualities)}')
         return v 
-
-# --- AUDIOBOOK BATCH MODELS ---
-
 class AudiobookScriptLine(BaseModel):
     character: str = Field(..., min_length=1, max_length=200)
     spoken_text: str = Field(..., min_length=1)

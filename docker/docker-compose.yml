@@ -46,9 +46,13 @@ services:
       # Mount voice sample file (optional)
       - ${VOICE_SAMPLE_HOST_PATH:-../voice-sample.mp3}:/app/voice-sample.mp3:ro
 
-      # Mount model cache for persistence
-      - chatterbox-models:${MODEL_CACHE_DIR:-/cache}
+      # Live-Edit Bind Mount: Syncs your local Python files directly into the container
+      - ../app:/app/app
 
+      # Mount model cache for persistence
+      - chatterbox-models:/cache
+      - chatterbox-huggingface:/root/.cache/huggingface
+      
       # Mount voice library for persistence
       - chatterbox-voices:${VOICE_LIBRARY_DIR:-/voices}
 
@@ -91,6 +95,8 @@ services:
 
 volumes:
   chatterbox-models:
+    driver: local
+  chatterbox-huggingface:
     driver: local
   chatterbox-voices:
     driver: local

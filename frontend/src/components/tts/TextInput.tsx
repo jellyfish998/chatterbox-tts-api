@@ -44,50 +44,44 @@ export default function TextInput({
           </label>
           <div className="flex items-center gap-2">
             
-            {/* Hidden inputs for Index and Chapters */}
-            <input 
-              type="file" 
-              ref={indexInputRef} 
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file && onIndexSelected) onIndexSelected(file);
-                if (indexInputRef.current) indexInputRef.current.value = '';
-              }} 
-              accept=".json" 
-              className="hidden" 
-            />
-
-            <input 
-              type="file" 
-              ref={chaptersInputRef} 
-              onChange={(e) => {
-                const files = e.target.files;
-                if (files && files.length > 0 && onChaptersSelected) onChaptersSelected(files);
-                if (chaptersInputRef.current) chaptersInputRef.current.value = '';
-              }} 
-              accept=".json" 
-              multiple 
-              className="hidden" 
-            />
-
-            {/* Audiobook Dual Buttons */}
+          {/* Hidden Input (Dynamically switches between Folder and File picker based on mode) */}
             {isAudiobookMode ? (
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => indexInputRef.current?.click()}
-                  className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-md bg-primary/10 text-primary hover:bg-primary/20 border border-primary/30 transition-colors duration-200 font-medium"
-                >
-                  <UploadCloud className="w-3.5 h-3.5" />
-                  Upload index.json
-                </button>
-                <button
-                  onClick={() => chaptersInputRef.current?.click()}
-                  className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-md bg-muted text-muted-foreground hover:bg-muted/80 border border-border transition-colors duration-200 font-medium"
-                >
-                  <UploadCloud className="w-3.5 h-3.5" />
-                  Upload Chapters
-                </button>
-              </div>
+              <input 
+                type="file" 
+                ref={chaptersInputRef} 
+                onChange={(e) => {
+                  const files = e.target.files;
+                  if (files && files.length > 0 && onChaptersSelected) onChaptersSelected(files);
+                  if (chaptersInputRef.current) chaptersInputRef.current.value = '';
+                }} 
+                multiple 
+                className="hidden" 
+                {...{ webkitdirectory: "", directory: "" } as any}
+              />
+            ) : (
+              <input 
+                type="file" 
+                ref={chaptersInputRef} 
+                onChange={(e) => {
+                  const files = e.target.files;
+                  if (files && files.length > 0 && onChaptersSelected) onChaptersSelected(files);
+                  if (chaptersInputRef.current) chaptersInputRef.current.value = '';
+                }} 
+                accept=".json" 
+                multiple 
+                className="hidden" 
+              />
+            )}
+
+            {/* Audiobook / Standard Upload Button */}
+            {isAudiobookMode ? (
+              <button
+                onClick={() => chaptersInputRef.current?.click()}
+                className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-md bg-primary/10 text-primary hover:bg-primary/20 border border-primary/30 transition-colors duration-200 font-medium"
+              >
+                <UploadCloud className="w-3.5 h-3.5" />
+                Upload Project Folder
+              </button>
             ) : (
               <button
                 onClick={() => chaptersInputRef.current?.click()}
@@ -98,6 +92,7 @@ export default function TextInput({
               </button>
             )}
 
+            {/* Mode Toggles */}
             {onToggleAudiobookMode && (
               <button
                 onClick={onToggleAudiobookMode}
